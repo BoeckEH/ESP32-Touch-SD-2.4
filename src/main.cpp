@@ -1,8 +1,10 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>
+#include <SD.h>
+#include <FS.h>
 
-// TFT pins
+// TFT pins (SPI bus 1)
 #define TFT_MISO 12
 #define TFT_MOSI 13
 #define TFT_SCLK 14
@@ -10,14 +12,20 @@
 #define TFT_DC 2
 #define TFT_BL 27
 
-// Touch pins (shared SPI)
+// Touch pins (shared with TFT SPI)
 #define TOUCH_CS 33
 #define TOUCH_IRQ 36
 
+// SD Card pins (SPI bus 2)
+#define SD_MISO 19
+#define SD_MOSI 23
+#define SD_CLK 18
+#define SD_CS 5
+
 // RGB LED pins
-#define LED_PIN1 17
-#define LED_PIN2 4
-#define LED_PIN3 16
+#define LED_RED 4
+#define LED_GREEN 17
+#define LED_BLUE 16
 
 // Calibrated touch values
 #define TS_MINX 400
@@ -26,6 +34,7 @@
 #define TS_MAXY 3770
 
 TFT_eSPI tft = TFT_eSPI();
+SPIClass sdSPI(VSPI);
 
 // Manual XPT2046 reading
 uint16_t readTouchRaw(uint8_t command)
@@ -53,31 +62,184 @@ bool isTouched()
   return digitalRead(TOUCH_IRQ) == LOW;
 }
 
+void listSDCardDirectory()
+{
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(10, 10);
+  tft.println("SD Card Files");
+
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  // Check if SD card is mounted
+  if (!SD.begin(SD_CS, sdSPI, 4000000))
+  {
+    Serial.println("SD Card mount failed!");
+    tft.setCursor(10, 40);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("SD Card not found!");
+    tft.setCursor(10, 55);
+    tft.println("Check connection");
+    return;
+  }
+
+  uint8_t cardType = SD.cardType();
+  if (cardType == CARD_NONE)
+  {
+    Serial.println("No SD card attached");
+    tft.setCursor(10, 40);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("No SD card detected");
+    return;
+  }
+
+  // Print card type
+  Serial.print("SD Card Type: ");
+  tft.setCursor(10, 40);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+
+  if (cardType == CARD_MMC)
+  {
+    Serial.println("MMC");
+    tft.print("Type: MMC");
+  }
+  else if (cardType == CARD_SD)
+  {
+    Serial.println("SDSC");
+    tft.print("Type: SDSC");
+  }
+  else if (cardType == CARD_SDHC)
+  {
+    Serial.println("SDHC");
+    tft.print("Type: SDHC");
+  }
+  else
+  {
+    Serial.println("UNKNOWN");
+    tft.print("Type: UNKNOWN");
+  }
+
+  // Print card size
+  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+  Serial.printf("SD Card Size: %lluMB\n", cardSize);
+  tft.setCursor(10, 55);
+  tft.printf("Size: %lluMB", cardSize);
+
+  // List root directory
+  Serial.println("\nRoot Directory:");
+  tft.setCursor(10, 75);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.println("Root Directory:");
+  tft.println("----------------");
+
+  File root = SD.open("/");
+  if (!root)
+  {
+    Serial.println("Failed to open directory");
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("Error reading dir");
+    return;
+  }
+
+  if (!root.isDirectory())
+  {
+    Serial.println("Not a directory");
+    return;
+  }
+
+  int y = 100;
+  int fileCount = 0;
+  File file = root.openNextFile();
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  while (file)
+  {
+    if (y > 310)
+    {
+      // Screen full
+      tft.setCursor(10, 310);
+      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+      tft.println("...(more files)");
+      break;
+    }
+
+    String fileName = String(file.name());
+
+    if (file.isDirectory())
+    {
+      Serial.printf("  DIR : %s\n", fileName.c_str());
+      tft.setCursor(10, y);
+      tft.setTextColor(TFT_CYAN, TFT_BLACK);
+      tft.printf("[%s]", fileName.c_str());
+    }
+    else
+    {
+      Serial.printf("  FILE: %s (%d bytes)\n", fileName.c_str(), file.size());
+      tft.setCursor(10, y);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.print(fileName);
+
+      // Show file size
+      tft.setCursor(180, y);
+      tft.setTextColor(TFT_GREEN, TFT_BLACK);
+      if (file.size() < 1024)
+      {
+        tft.printf("%dB", file.size());
+      }
+      else if (file.size() < 1024 * 1024)
+      {
+        tft.printf("%dK", file.size() / 1024);
+      }
+      else
+      {
+        tft.printf("%dM", file.size() / (1024 * 1024));
+      }
+    }
+
+    y += 12;
+    fileCount++;
+    file = root.openNextFile();
+  }
+
+  Serial.printf("\nTotal files/folders: %d\n", fileCount);
+
+  if (fileCount == 0)
+  {
+    tft.setCursor(10, 100);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.println("(empty directory)");
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
   delay(1000);
 
   Serial.println("\n========================================");
-  Serial.println("ESP32 TFT Display & Touch + RGB LED");
+  Serial.println("ESP32 TFT Display + SD Card");
   Serial.println("========================================\n");
 
   // Initialize RGB LED pins
-  pinMode(LED_PIN1, OUTPUT);
-  pinMode(LED_PIN2, OUTPUT);
-  pinMode(LED_PIN3, OUTPUT);
-  digitalWrite(LED_PIN1, LOW);
-  digitalWrite(LED_PIN2, LOW);
-  digitalWrite(LED_PIN3, LOW);
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_BLUE, OUTPUT);
+  digitalWrite(LED_RED, HIGH);
+  digitalWrite(LED_GREEN, HIGH);
+  digitalWrite(LED_BLUE, HIGH);
 
-  Serial.println("RGB LED pins: 17, 4, 16");
-  Serial.println("Cycling every 1 second...\n");
+  // Turn on GREEN LED to show starting
+  digitalWrite(LED_GREEN, LOW);
 
   // Initialize backlight
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
 
-  // Initialize SPI
+  // Initialize Display/Touch SPI (HSPI)
+  Serial.println("Initializing Display SPI...");
   SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI);
   SPI.setFrequency(2000000);
 
@@ -92,206 +254,57 @@ void setup()
   tft.invertDisplay(false);
   tft.setRotation(0);
 
-  // Draw interface
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.setCursor(20, 10);
-  tft.println("Touch Test");
+  Serial.println("Display initialized");
 
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setCursor(10, 40);
-  tft.println("ST7789 - 240x320");
-  tft.setCursor(10, 55);
-  tft.println("Touch calibrated!");
+  // Initialize SD Card SPI (VSPI)
+  Serial.println("\nInitializing SD Card SPI...");
+  Serial.printf("SD Card pins - MOSI:%d MISO:%d CLK:%d CS:%d\n",
+                SD_MOSI, SD_MISO, SD_CLK, SD_CS);
 
-  // Draw touch area
-  tft.fillRect(10, 80, 220, 100, TFT_BLUE);
-  tft.setTextColor(TFT_YELLOW, TFT_BLUE);
-  tft.setTextSize(3);
-  tft.setCursor(30, 115);
-  tft.println("TOUCH");
-  tft.setCursor(40, 145);
-  tft.println("HERE");
+  sdSPI.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS);
 
-  // Clear button
-  tft.fillRect(10, 280, 220, 30, TFT_RED);
-  tft.setTextColor(TFT_WHITE, TFT_RED);
-  tft.setTextSize(2);
-  tft.setCursor(70, 287);
-  tft.println("CLEAR");
+  // Turn GREEN off, BLUE on to show SD card reading
+  digitalWrite(LED_GREEN, HIGH);
+  digitalWrite(LED_BLUE, LOW);
 
-  // Coordinate display area
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setCursor(10, 195);
-  tft.println("Touch coordinates:");
+  // Read and display SD card directory
+  listSDCardDirectory();
 
-  // LED status area
-  tft.setCursor(10, 245);
-  tft.println("RGB LED:");
+  // Turn BLUE off, show ready (no LED)
+  digitalWrite(LED_BLUE, HIGH);
+
+  Serial.println("\n========================================");
+  Serial.println("Setup complete!");
+  Serial.println("Touch screen to refresh directory");
+  Serial.println("========================================\n");
 }
 
 void loop()
 {
   static bool wasTouched = false;
-  static int lastX = -1;
-  static int lastY = -1;
-  static unsigned long lastLEDChange = 0;
-  static int ledState = 0;
 
-  // RGB LED cycling (1 second intervals)
-  if (millis() - lastLEDChange > 1000)
-  {
-    // Turn off all LEDs
-    digitalWrite(LED_PIN1, HIGH); // 17 is Green
-    digitalWrite(LED_PIN2, HIGH); // 4 is Red
-    digitalWrite(LED_PIN3, HIGH); // 16 is Blue
-
-    // Cycle through LEDs
-    switch (ledState)
-    {
-    case 0:
-      digitalWrite(LED_PIN1, HIGH);
-      digitalWrite(LED_PIN2, HIGH);
-      digitalWrite(LED_PIN3, HIGH);
-      digitalWrite(LED_PIN1, LOW);
-      Serial.println("LED: GPIO 17 ON");
-      tft.fillRect(10, 260, 220, 15, TFT_BLACK);
-      tft.setTextColor(TFT_GREEN, TFT_BLACK);
-      tft.setTextSize(1);
-      tft.setCursor(10, 260);
-      tft.println("GPIO 17 ON");
-      break;
-    case 1:
-      digitalWrite(LED_PIN1, HIGH);
-      digitalWrite(LED_PIN2, HIGH);
-      digitalWrite(LED_PIN3, HIGH);
-      digitalWrite(LED_PIN2, LOW);
-      Serial.println("LED: GPIO 4 ON");
-      tft.fillRect(10, 260, 220, 15, TFT_BLACK);
-      tft.setTextColor(TFT_GREEN, TFT_BLACK);
-      tft.setTextSize(1);
-      tft.setCursor(10, 260);
-      tft.println("GPIO 4 ON");
-      break;
-    case 2:
-      digitalWrite(LED_PIN1, HIGH);
-      digitalWrite(LED_PIN2, HIGH);
-      digitalWrite(LED_PIN3, HIGH);
-      digitalWrite(LED_PIN3, LOW);
-      Serial.println("LED: GPIO 16 ON");
-      tft.fillRect(10, 260, 220, 15, TFT_BLACK);
-      tft.setTextColor(TFT_GREEN, TFT_BLACK);
-      tft.setTextSize(1);
-      tft.setCursor(10, 260);
-      tft.println("GPIO 16 ON");
-      break;
-    }
-
-    ledState = (ledState + 1) % 3;
-    lastLEDChange = millis();
-  }
-
-  // Touch handling
   bool touched = isTouched();
 
-  if (touched)
+  if (touched && !wasTouched)
   {
-    if (!wasTouched)
-    {
-      wasTouched = true;
-    }
+    wasTouched = true;
 
-    // Read touch coordinates
-    SPI.setFrequency(2000000);
+    // Flash RED LED
+    digitalWrite(LED_RED, LOW);
+    delay(100);
+    digitalWrite(LED_RED, HIGH);
 
-    uint16_t rawX = readTouchRaw(0x90);
-    delay(1);
-    uint16_t rawY = readTouchRaw(0xD0);
-    delay(1);
-    uint16_t rawZ = readTouchRaw(0xB0);
+    Serial.println("\nRefreshing SD card directory...");
 
-    SPI.setFrequency(27000000);
-
-    // Map to screen with calibrated values
-    int x = map(rawX, TS_MAXX, TS_MINX, 0, 240); // X reversed
-    int y = map(rawY, TS_MINY, TS_MAXY, 0, 320); // Y normal
-    x = constrain(x, 0, 239);
-    y = constrain(y, 0, 319);
-
-    // Display coordinates
-    tft.fillRect(10, 210, 220, 30, TFT_BLACK);
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.setTextSize(1);
-    tft.setCursor(10, 210);
-    tft.printf("Raw: X=%4d Y=%4d", rawX, rawY);
-    tft.setCursor(10, 225);
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.printf("Screen: X=%3d Y=%3d", x, y);
-
-    // Check for clear button press
-    if (y >= 280 && y <= 310 && x >= 10 && x <= 230)
-    {
-      // Clear drawing area
-      tft.fillRect(0, 0, 240, 275, TFT_BLACK);
-
-      // Redraw interface
-      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-      tft.setTextSize(2);
-      tft.setCursor(20, 10);
-      tft.println("Touch Test");
-
-      tft.setTextSize(1);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.setCursor(10, 40);
-      tft.println("ST7789 - 240x320");
-      tft.setCursor(10, 55);
-      tft.println("Touch calibrated!");
-
-      tft.fillRect(10, 80, 220, 100, TFT_BLUE);
-      tft.setTextColor(TFT_YELLOW, TFT_BLUE);
-      tft.setTextSize(3);
-      tft.setCursor(30, 115);
-      tft.println("TOUCH");
-      tft.setCursor(40, 145);
-      tft.println("HERE");
-
-      tft.setTextSize(1);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.setCursor(10, 195);
-      tft.println("Touch coordinates:");
-
-      tft.setCursor(10, 245);
-      tft.println("RGB LED:");
-
-      lastX = -1;
-      lastY = -1;
-    }
-    else
-    {
-      // Draw on screen
-      tft.fillCircle(x, y, 2, TFT_WHITE);
-
-      // Draw line from last point
-      if (lastX != -1 && lastY != -1)
-      {
-        tft.drawLine(lastX, lastY, x, y, TFT_WHITE);
-      }
-
-      lastX = x;
-      lastY = y;
-    }
-
-    delay(10);
+    // Flash BLUE LED while reading
+    digitalWrite(LED_BLUE, LOW);
+    listSDCardDirectory();
+    digitalWrite(LED_BLUE, HIGH);
   }
-  else
+  else if (!touched)
   {
     wasTouched = false;
-    lastX = -1;
-    lastY = -1;
   }
 
-  delay(10);
+  delay(50);
 }

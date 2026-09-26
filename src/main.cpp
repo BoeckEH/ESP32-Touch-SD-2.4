@@ -73,15 +73,30 @@ void listSDCardDirectory()
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
-  // Check if SD card is mounted
-  if (!SD.begin(SD_CS, sdSPI, 4000000))
+  // Try to mount SD card with lower frequency (400kHz for init)
+  Serial.println("Attempting to mount SD card...");
+  Serial.println("Using 400kHz for initialization");
+
+  if (!SD.begin(SD_CS, sdSPI, 400000, "/sd", 5))
   {
     Serial.println("SD Card mount failed!");
     tft.setCursor(10, 40);
     tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.println("SD Card not found!");
+    tft.println("SD Mount Failed!");
     tft.setCursor(10, 55);
-    tft.println("Check connection");
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.println("Check:");
+    tft.setCursor(10, 70);
+    tft.println("- Card inserted?");
+    tft.setCursor(10, 85);
+    tft.println("- FAT32 format?");
+    tft.setCursor(10, 100);
+    tft.println("- Not exFAT/NTFS?");
+    tft.setCursor(10, 120);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.println("32GB cards must be");
+    tft.setCursor(10, 135);
+    tft.println("formatted as FAT32");
     return;
   }
 
@@ -276,6 +291,11 @@ void setup()
   Serial.println("\n========================================");
   Serial.println("Setup complete!");
   Serial.println("Touch screen to refresh directory");
+  Serial.println("\nIMPORTANT: If SD card fails to mount:");
+  Serial.println("- Card MUST be formatted as FAT32");
+  Serial.println("- Windows formats 32GB+ as exFAT by default");
+  Serial.println("- Use Windows Disk Management to format as FAT32");
+  Serial.println("- Or use SD Card Formatter tool");
   Serial.println("========================================\n");
 }
 

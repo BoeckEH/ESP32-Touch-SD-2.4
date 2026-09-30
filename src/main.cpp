@@ -1,8 +1,7 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>
-#include <SD.h>
-#include <FS.h>
+#include <SdFat.h>
 
 // TFT pins (SPI bus 1)
 #define TFT_MISO 12
@@ -35,6 +34,11 @@
 
 TFT_eSPI tft = TFT_eSPI();
 SPIClass sdSPI(VSPI);
+
+// SdFat for exFAT support
+SdFs sd;
+FsFile root;
+FsFile file;
 
 // Manual XPT2046 reading
 uint16_t readTouchRaw(uint8_t command)
@@ -73,13 +77,18 @@ void listSDCardDirectory()
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
-  // Try to mount SD card with lower frequency (400kHz for init)
-  Serial.println("Attempting to mount SD card...");
-  Serial.println("Using 400kHz for initialization");
+  // Configure SdFat for custom SPI
+  SdSpiConfig spiConfig(SD_CS, SHARED_SPI, SD_SCK_MHZ(4), &sdSPI);
 
-  if (!SD.begin(SD_CS, sdSPI, 400000, "/sd", 5))
+  Serial.println("Attempting to mount SD card...");
+  Serial.println("SdFat library - supports FAT16/FAT32/exFAT");
+
+  if (!sd.begin(spiConfig))
   {
     Serial.println("SD Card mount failed!");
+    Serial.println("Error details:");
+    sd.initErrorPrint(&Serial);
+
     tft.setCursor(10, 40);
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("SD Mount Failed!");
@@ -89,88 +98,87 @@ void listSDCardDirectory()
     tft.setCursor(10, 70);
     tft.println("- Card inserted?");
     tft.setCursor(10, 85);
-    tft.println("- FAT32 format?");
+    tft.println("- Card formatted?");
     tft.setCursor(10, 100);
-    tft.println("- Not exFAT/NTFS?");
-    tft.setCursor(10, 120);
+    tft.println("Supports:");
+    tft.setCursor(10, 115);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.println("32GB cards must be");
-    tft.setCursor(10, 135);
-    tft.println("formatted as FAT32");
+    tft.println("FAT16/FAT32/exFAT");
     return;
   }
 
-  uint8_t cardType = SD.cardType();
-  if (cardType == CARD_NONE)
-  {
-    Serial.println("No SD card attached");
-    tft.setCursor(10, 40);
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.println("No SD card detected");
-    return;
-  }
-
-  // Print card type
+  // Get card type
+  uint8_t cardType = sd.card()->type();
   Serial.print("SD Card Type: ");
   tft.setCursor(10, 40);
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
 
-  if (cardType == CARD_MMC)
+  switch (cardType)
   {
-    Serial.println("MMC");
-    tft.print("Type: MMC");
+    case SD_CARD_TYPE_SD1:
+      Serial.println("SD1");
+      tft.print("Type: SD1");
+      break;
+    case SD_CARD_TYPE_SD2:
+      Serial.println("SD2");
+      tft.print("Type: SD2");
+      break;
+    case SD_CARD_TYPE_SDHC:
+      Serial.println("SDHC/SDXC");
+      tft.print("Type: SDHC/SDXC");
+      break;
+    default:
+      Serial.println("Unknown");
+      tft.print("Type: Unknown");
   }
-  else if (cardType == CARD_SD)
+
+  // Get filesystem type
+  tft.setCursor(10, 55);
+  tft.setTextColor(TFT_MAGENTA, TFT_BLACK);
+  if (sd.fatType() == FAT_TYPE_EXFAT)
   {
-    Serial.println("SDSC");
-    tft.print("Type: SDSC");
+    Serial.println("Filesystem: exFAT");
+    tft.print("FS: exFAT");
   }
-  else if (cardType == CARD_SDHC)
+  else if (sd.fatType() == FAT_TYPE_FAT32)
   {
-    Serial.println("SDHC");
-    tft.print("Type: SDHC");
+    Serial.println("Filesystem: FAT32");
+    tft.print("FS: FAT32");
   }
-  else
+  else if (sd.fatType() == FAT_TYPE_FAT16)
   {
-    Serial.println("UNKNOWN");
-    tft.print("Type: UNKNOWN");
+    Serial.println("Filesystem: FAT16");
+    tft.print("FS: FAT16");
   }
 
   // Print card size
-  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+  uint64_t cardSize = sd.card()->sectorCount() * 512ULL / (1024 * 1024);
   Serial.printf("SD Card Size: %lluMB\n", cardSize);
-  tft.setCursor(10, 55);
+  tft.setCursor(10, 70);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
   tft.printf("Size: %lluMB", cardSize);
 
   // List root directory
   Serial.println("\nRoot Directory:");
-  tft.setCursor(10, 75);
+  tft.setCursor(10, 90);
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.println("Root Directory:");
   tft.println("----------------");
 
-  File root = SD.open("/");
-  if (!root)
+  if (!root.open("/"))
   {
-    Serial.println("Failed to open directory");
+    Serial.println("Failed to open root directory");
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("Error reading dir");
     return;
   }
 
-  if (!root.isDirectory())
-  {
-    Serial.println("Not a directory");
-    return;
-  }
-
-  int y = 100;
+  int y = 115;
   int fileCount = 0;
-  File file = root.openNextFile();
 
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
-  while (file)
+  while (file.openNext(&root, O_RDONLY))
   {
     if (y > 310)
     {
@@ -178,21 +186,24 @@ void listSDCardDirectory()
       tft.setCursor(10, 310);
       tft.setTextColor(TFT_YELLOW, TFT_BLACK);
       tft.println("...(more files)");
+      file.close();
       break;
     }
 
-    String fileName = String(file.name());
+    char fileName[64];
+    file.getName(fileName, sizeof(fileName));
 
     if (file.isDirectory())
     {
-      Serial.printf("  DIR : %s\n", fileName.c_str());
+      Serial.printf("  DIR : %s\n", fileName);
       tft.setCursor(10, y);
       tft.setTextColor(TFT_CYAN, TFT_BLACK);
-      tft.printf("[%s]", fileName.c_str());
+      tft.printf("[%s]", fileName);
     }
     else
     {
-      Serial.printf("  FILE: %s (%d bytes)\n", fileName.c_str(), file.size());
+      uint32_t fileSize = file.fileSize();
+      Serial.printf("  FILE: %s (%lu bytes)\n", fileName, fileSize);
       tft.setCursor(10, y);
       tft.setTextColor(TFT_WHITE, TFT_BLACK);
       tft.print(fileName);
@@ -200,30 +211,32 @@ void listSDCardDirectory()
       // Show file size
       tft.setCursor(180, y);
       tft.setTextColor(TFT_GREEN, TFT_BLACK);
-      if (file.size() < 1024)
+      if (fileSize < 1024)
       {
-        tft.printf("%dB", file.size());
+        tft.printf("%luB", fileSize);
       }
-      else if (file.size() < 1024 * 1024)
+      else if (fileSize < 1024 * 1024)
       {
-        tft.printf("%dK", file.size() / 1024);
+        tft.printf("%luK", fileSize / 1024);
       }
       else
       {
-        tft.printf("%dM", file.size() / (1024 * 1024));
+        tft.printf("%luM", fileSize / (1024 * 1024));
       }
     }
 
     y += 12;
     fileCount++;
-    file = root.openNextFile();
+    file.close();
   }
+
+  root.close();
 
   Serial.printf("\nTotal files/folders: %d\n", fileCount);
 
   if (fileCount == 0)
   {
-    tft.setCursor(10, 100);
+    tft.setCursor(10, 115);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.println("(empty directory)");
   }
@@ -291,11 +304,10 @@ void setup()
   Serial.println("\n========================================");
   Serial.println("Setup complete!");
   Serial.println("Touch screen to refresh directory");
-  Serial.println("\nIMPORTANT: If SD card fails to mount:");
-  Serial.println("- Card MUST be formatted as FAT32");
-  Serial.println("- Windows formats 32GB+ as exFAT by default");
-  Serial.println("- Use Windows Disk Management to format as FAT32");
-  Serial.println("- Or use SD Card Formatter tool");
+  Serial.println("\nSD Card Support:");
+  Serial.println("- FAT16/FAT32/exFAT supported!");
+  Serial.println("- Using SdFat library for exFAT");
+  Serial.println("- Works with cards formatted by Windows");
   Serial.println("========================================\n");
 }
 
